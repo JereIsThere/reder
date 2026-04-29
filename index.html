@@ -402,6 +402,50 @@
     cursor: zoom-in;
   }
 
+  /* Multi-image galleries (/image returns 3 in parallel) */
+  .msg-multi-images {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px; margin-top: 8px;
+  }
+  .multi-image-cell {
+    display: flex; flex-direction: column; gap: 4px;
+    background: #0d0d0d; border: 1px solid var(--border);
+    border-radius: 10px; padding: 6px;
+  }
+  .multi-image-cell img {
+    width: 100%; height: 200px; object-fit: cover;
+    border-radius: 7px; background: #000;
+    cursor: zoom-in; display: block;
+  }
+  .multi-image-label {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 4px 0; gap: 6px;
+  }
+  .mi-model {
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: 10.5px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mi-cost {
+    font-size: 10px; color: var(--text-faint);
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px;
+    font-family: ui-monospace, monospace;
+  }
+  .mi-cost.free { color: var(--success); border-color: rgba(45,214,110,.3); }
+  .multi-image-total {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    font-size: 11px; color: var(--text-faint);
+    text-align: right;
+    font-family: ui-monospace, monospace;
+  }
+  .multi-image-fallback {
+    padding: 8px; border: 1px dashed var(--error); border-radius: 7px;
+    color: var(--error); font-size: 11px; font-family: ui-monospace, monospace;
+    word-break: break-all; line-height: 1.4;
+  }
+
   .typing { display: inline-flex; gap: 4px; padding: 6px 0; }
   .typing span {
     width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint);
@@ -582,17 +626,21 @@
       <div class="field">
         <label for="modelSelect">Model</label>
         <select id="modelSelect">
-          <optgroup label="Anthropic">
+          <optgroup label="Anthropic (Claude)">
             <option value="claude-opus-4-7">claude-opus-4-7</option>
             <option value="claude-sonnet-4-6" selected>claude-sonnet-4-6</option>
             <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
           </optgroup>
-          <optgroup label="Google">
+          <optgroup label="OpenAI (ChatGPT)">
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+          </optgroup>
+          <optgroup label="Google (Gemini)">
             <option value="gemini-2.5-pro">gemini-2.5-pro</option>
             <option value="gemini-2.0-flash">gemini-2.0-flash</option>
             <option value="gemini-1.5-flash">gemini-1.5-flash</option>
           </optgroup>
         </select>
+        <div class="field-hint"><span class="slash-hint">/image</span> rendert parallel via Gemini · Flux · DALL-E · <span class="slash-hint">/video</span> via Veo 3</div>
       </div>
 
       <div class="field">
@@ -1236,21 +1284,23 @@
     function avatarKindFor(m) {
       if (m.role === "user") return "user";
       if (m.role === "error") return "error";
-      if (m.type === "image") return "image";
+      if (m.type === "image" || m.type === "multi-image") return "image";
       if (m.type === "video") return "video";
       const model = (m.model || state.model || "").toLowerCase();
       if (model.startsWith("claude")) return "claude";
-      if (model.startsWith("gemini") || model.startsWith("veo")) return "gemini";
+      if (model.startsWith("gpt") || model.startsWith("dall")) return "gemini";
+      if (model.startsWith("gemini") || model.startsWith("veo") || model.startsWith("flux")) return "gemini";
       return "claude";
     }
 
     function authorFor(m) {
       if (m.role === "user") return "You";
       if (m.role === "error") return "Error";
-      if (m.type === "image") return "Image";
+      if (m.type === "image" || m.type === "multi-image") return "Image";
       if (m.type === "video") return "Video";
       const model = (m.model || state.model || "").toLowerCase();
       if (model.startsWith("claude")) return "Claude";
+      if (model.startsWith("gpt")) return "ChatGPT";
       if (model.startsWith("gemini")) return "Gemini";
       if (model.startsWith("veo")) return "Veo";
       return "Assistant";
@@ -1290,7 +1340,59 @@
       const bubble = div.querySelector(".msg-bubble");
       const tools = div.querySelector(".msg-tools");
 
-      if (m.type === "image" && m.imageUrl) {
+      if (m.type === "multi-image" && Array.isArray(m.images) && m.images.length) {
+        if (m.content) {
+          const cap = document.createElement("div");
+          cap.className = "msg-caption";
+          cap.textContent = m.content;
+          bubble.appendChild(cap);
+        }
+        const grid = document.createElement("div");
+        grid.className = "msg-multi-images";
+        for (const img of m.images) {
+          const cell = document.createElement("div");
+          cell.className = "multi-image-cell";
+          if (img.imageUrl) {
+            const i = document.createElement("img");
+            i.src = img.imageUrl;
+            i.alt = img.model || "generated image";
+            i.addEventListener("click", () => openLightbox(img.imageUrl));
+            i.addEventListener("error", () => {
+              const fb = document.createElement("div");
+              fb.className = "multi-image-fallback";
+              fb.textContent = "Failed · " + (img.imageUrl || "").slice(0, 120);
+              i.replaceWith(fb);
+            });
+            cell.appendChild(i);
+          } else if (img.error) {
+            const fb = document.createElement("div");
+            fb.className = "multi-image-fallback";
+            fb.textContent = String(img.error).slice(0, 200);
+            cell.appendChild(fb);
+          }
+          const label = document.createElement("div");
+          label.className = "multi-image-label";
+          const modelSpan = document.createElement("span");
+          modelSpan.className = "mi-model";
+          modelSpan.textContent = img.model || "?";
+          label.appendChild(modelSpan);
+          if (typeof img.costUsd === "number") {
+            const costSpan = document.createElement("span");
+            costSpan.className = "mi-cost" + (img.costUsd === 0 ? " free" : "");
+            costSpan.textContent = img.costUsd === 0 ? "free" : "$" + img.costUsd.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+            label.appendChild(costSpan);
+          }
+          cell.appendChild(label);
+          grid.appendChild(cell);
+        }
+        bubble.appendChild(grid);
+        if (typeof m.totalCostUsd === "number" && m.totalCostUsd > 0) {
+          const tot = document.createElement("div");
+          tot.className = "multi-image-total";
+          tot.textContent = "Σ $" + m.totalCostUsd.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+          bubble.appendChild(tot);
+        }
+      } else if (m.type === "image" && m.imageUrl) {
         if (m.content) {
           const cap = document.createElement("div");
           cap.className = "msg-caption";
@@ -1389,9 +1491,10 @@
     function appendTyping(intent) {
       const div = document.createElement("div");
       div.className = "msg assistant typing-row";
-      const kind = intent === "image" ? "image" : (intent === "video" ? "video" : (state.model.startsWith("claude") ? "claude" : "gemini"));
-      const author = intent === "image" ? "Image" : (intent === "video" ? "Video" : (state.model.startsWith("claude") ? "Claude" : "Gemini"));
-      const label = intent === "image" ? "image-gen" : (intent === "video" ? "video-gen" : state.model);
+      const m = state.model.toLowerCase();
+      const kind = intent === "image" ? "image" : (intent === "video" ? "video" : (m.startsWith("claude") ? "claude" : "gemini"));
+      const author = intent === "image" ? "Image" : (intent === "video" ? "Video" : (m.startsWith("claude") ? "Claude" : m.startsWith("gpt") ? "ChatGPT" : "Gemini"));
+      const label = intent === "image" ? "gemini · flux · dall-e" : (intent === "video" ? "veo-3.0" : state.model);
       div.innerHTML = `
         <div class="msg-avatar ${kind}">${ICONS[kind]}</div>
         <div class="msg-body">
@@ -1436,6 +1539,19 @@
     function parseWebhookResponse(data) {
       // Accept many shapes returned by different n8n flows / providers.
       const m = (data && (data.message || data.msg)) || {};
+
+      // Multi-image (parallel renders): pass through verbatim.
+      if (m.type === "multi-image" && Array.isArray(m.images) && m.images.length) {
+        return {
+          role: "assistant",
+          type: "multi-image",
+          images: m.images,
+          totalCostUsd: typeof m.totalCostUsd === "number" ? m.totalCostUsd : null,
+          content: m.content || "",
+          model: m.model || data.model || "multi-image"
+        };
+      }
+
       let imageUrl = m.imageUrl || m.image_url || m.image || data.imageUrl || data.image_url || data.image || null;
       let videoUrl = m.videoUrl || m.video_url || m.video || data.videoUrl || data.video_url || data.video || null;
       let content = m.content || m.text || data.content || data.text || data.output || data.response || "";
@@ -1478,6 +1594,12 @@
         const who = m.role === "user" ? `**@${currentUser}**` : (m.role === "error" ? "**Error**" : `**${authorFor(m)}** _(${m.model || state.model})_`);
         lines.push(`### ${who}`);
         if (m.type === "image" && m.imageUrl) lines.push(`![image](${m.imageUrl})`);
+        else if (m.type === "multi-image" && Array.isArray(m.images)) {
+          for (const img of m.images) {
+            if (img.imageUrl) lines.push(`![${img.model || "image"}${typeof img.costUsd === "number" ? " — $" + img.costUsd : ""}](${img.imageUrl})`);
+          }
+          if (typeof m.totalCostUsd === "number") lines.push(`_Total: $${m.totalCostUsd}_`);
+        }
         else if (m.type === "video" && m.videoUrl) lines.push(`[video](${m.videoUrl})`);
         lines.push(m.content || "");
         if (m.role === "user" && m.attachments?.length) {
