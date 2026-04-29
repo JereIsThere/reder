@@ -68,9 +68,21 @@
   .auth-form input {
     background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
     padding: 11px 14px; border-radius: 9px; font: inherit; font-size: 14px;
-    transition: border-color .15s, background .15s;
+    transition: border-color .15s, background .15s; width: 100%;
   }
   .auth-form input:focus { outline: none; border-color: var(--accent); background: #181818; }
+  .auth-pass-wrap { position: relative; display: flex; }
+  .auth-pass-wrap input { padding-right: 42px; }
+  .auth-eye {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: 0; color: var(--text-faint); cursor: pointer;
+    width: 32px; height: 32px; border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color .15s, background .15s;
+  }
+  .auth-eye:hover { color: var(--accent); background: var(--accent-dim); }
+  .auth-eye.on { color: var(--accent); }
+  .auth-eye svg { width: 16px; height: 16px; }
   .auth-btn {
     background: var(--accent); color: #fff; border: 0;
     padding: 11px 14px; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600;
@@ -535,7 +547,12 @@
     </div>
     <form id="authForm" class="auth-form" autocomplete="on">
       <input id="authUser" type="text" placeholder="Username" autocomplete="username" required spellcheck="false" autocapitalize="off">
-      <input id="authPass" type="password" placeholder="Password" autocomplete="current-password" required>
+      <div class="auth-pass-wrap">
+        <input id="authPass" type="password" placeholder="Password" autocomplete="current-password" required spellcheck="false">
+        <button type="button" class="auth-eye" id="authEye" title="Show password" aria-label="Show password">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
       <button class="auth-btn" type="submit" id="authBtn">Enter →</button>
     </form>
     <div class="auth-err" id="authErr"></div>
@@ -665,12 +682,12 @@
 
   // ── Auth config (rotate by swapping salt+hash, see README) ───
   const AUTH_USERS = {
-    jere:    { salt: "5738838743fcce68", hash: "1284095f6599229aa37949e92df894122c4ac86e2ed428615e128041660f5c8b" },
-    patrick: { salt: "913ba159d1bcdc69", hash: "35850c8133bfa9ea120b55c7f077e702864846739f1ee19fc995e203429c1a32" },
-    mamer:   { salt: "023e92d11b61fdb0", hash: "1d16f6bcf4ca21a2d7327029f1285cede74c69cee05fbd562190a3236d4c879f" },
-    paper:   { salt: "f40fa80bcddbf743", hash: "572a3474619cb86bd6802d32209fcb3cff5af91b36ea2d3381879bcd483af29b" }
+    jere:    { salt: "3711e0b73b9008c0", hash: "8de5c3bfb39e39e33e8f6e359462ab746b3edeeaa8a1456e38a556d875a7480d" },
+    patrick: { salt: "4348e47536ba1586", hash: "12ef8ee02da4edc42ae26311505a541c10406375419db738124393533cfcc395" },
+    mamer:   { salt: "0a9dbea40dceb857", hash: "de41da3aa2628af61d86dfc200bb5e156ba09d63ce48b2e6d1c7c0f183f2ecdf" },
+    paper:   { salt: "a009e47e5785ad17", hash: "bb1924ef94bd29ccc35de32e9601b3cd928a3b687fa1168f6eed99f8990ca7c8" }
   };
-  const SESSION_KEY = "reder.auth.user";
+  const SESSION_KEY = "reder.auth.user.v2";
 
   async function sha256Hex(str) {
     const buf = new TextEncoder().encode(str);
@@ -718,12 +735,27 @@
     const userEl = document.getElementById("authUser");
     const passEl = document.getElementById("authPass");
     const btn = document.getElementById("authBtn");
+    const eyeBtn = document.getElementById("authEye");
+
+    eyeBtn.addEventListener("click", () => {
+      const showing = passEl.type === "text";
+      passEl.type = showing ? "password" : "text";
+      eyeBtn.classList.toggle("on", !showing);
+      eyeBtn.title = showing ? "Show password" : "Hide password";
+      passEl.focus();
+    });
+
+    if (!window.crypto || !crypto.subtle || !crypto.subtle.digest) {
+      errEl.textContent = "Browser does not support secure auth (Web Crypto). Use a recent Chrome/Firefox/Safari.";
+      btn.disabled = true;
+      return;
+    }
 
     form.addEventListener("submit", async e => {
       e.preventDefault();
       errEl.textContent = "";
       const user = userEl.value.trim().toLowerCase();
-      const pass = passEl.value;
+      const pass = passEl.value.trim();
       if (!user || !pass) return;
       btn.disabled = true; btn.textContent = "…";
       try {
