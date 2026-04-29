@@ -685,7 +685,8 @@
     jere:    { salt: "3711e0b73b9008c0", hash: "8de5c3bfb39e39e33e8f6e359462ab746b3edeeaa8a1456e38a556d875a7480d" },
     patrick: { salt: "4348e47536ba1586", hash: "12ef8ee02da4edc42ae26311505a541c10406375419db738124393533cfcc395" },
     mamer:   { salt: "0a9dbea40dceb857", hash: "de41da3aa2628af61d86dfc200bb5e156ba09d63ce48b2e6d1c7c0f183f2ecdf" },
-    paper:   { salt: "a009e47e5785ad17", hash: "bb1924ef94bd29ccc35de32e9601b3cd928a3b687fa1168f6eed99f8990ca7c8" }
+    paper:   { salt: "a009e47e5785ad17", hash: "bb1924ef94bd29ccc35de32e9601b3cd928a3b687fa1168f6eed99f8990ca7c8" },
+    daniel:  { salt: "984069c61d40f51f", hash: "c21c6e47876dee3d106f47462caedba1185c3899041ab120c02cf9d58bc2b07c" }
   };
   const SESSION_KEY = "reder.auth.user.v2";
 
@@ -749,6 +750,28 @@
       errEl.textContent = "Browser does not support secure auth (Web Crypto). Use a recent Chrome/Firefox/Safari.";
       btn.disabled = true;
       return;
+    }
+
+    // Invite link support: #u=<user>&p=<password> prefills (and auto-submits if both given).
+    // Hash is cleared from the URL after handling so it doesn't sit in the address bar.
+    const inviteHash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+    if (inviteHash) {
+      const params = new URLSearchParams(inviteHash);
+      const inviteUser = params.get("u");
+      const invitePass = params.get("p");
+      if (inviteUser) {
+        userEl.value = inviteUser;
+        history.replaceState(null, "", location.pathname + location.search);
+        if (invitePass) {
+          passEl.value = invitePass;
+          setTimeout(() => {
+            if (typeof form.requestSubmit === "function") form.requestSubmit();
+            else btn.click();
+          }, 30);
+        } else {
+          setTimeout(() => passEl.focus(), 60);
+        }
+      }
     }
 
     form.addEventListener("submit", async e => {
