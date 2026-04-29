@@ -750,6 +750,8 @@
   function runApp(currentUser) {
     appEl.hidden = false;
     const STORE_KEY = "reder.v1." + currentUser;
+    // Temp default for the next few days — strip / change once we move webhooks.
+    const DEFAULT_WEBHOOK = "https://n8n.jeremias-groehl.de/webhook/ai-chat";
 
     const $ = id => document.getElementById(id);
     const sidebarEl = $("sidebar");
@@ -785,12 +787,13 @@
 
     // ── State ───────────────────────────────────────
     const state = load() || {
-      webhookUrl: "",
+      webhookUrl: DEFAULT_WEBHOOK,
       model: "claude-sonnet-4-6",
       systemPrompt: "",
       activeSessionId: null,
       sessions: {}
     };
+    if (!state.webhookUrl) state.webhookUrl = DEFAULT_WEBHOOK;
     if (!state.activeSessionId || !state.sessions[state.activeSessionId]) {
       const id = newSessionId();
       state.sessions[id] = blankSession(id);
@@ -1245,6 +1248,12 @@
         img.src = m.imageUrl;
         img.alt = m.content || "generated image";
         img.addEventListener("click", () => openLightbox(m.imageUrl));
+        img.addEventListener("error", () => {
+          const fallback = document.createElement("div");
+          fallback.style.cssText = "padding:10px;border:1px dashed var(--error);border-radius:8px;color:var(--error);font-size:12px;font-family:ui-monospace,monospace;word-break:break-all;line-height:1.5;";
+          fallback.textContent = "Image failed to load · " + img.src.slice(0, 200) + (img.src.length > 200 ? "…" : "");
+          img.replaceWith(fallback);
+        });
         media.appendChild(img);
         bubble.appendChild(media);
       } else if (m.type === "video" && m.videoUrl) {
@@ -1369,6 +1378,42 @@
       lightboxEl.classList.add("show");
     }
 
+    function parseWebhookResponse(data) {
+      // Accept many shapes returned by different n8n flows / providers.
+      const m = (data && (data.message || data.msg)) || {};
+      let imageUrl = m.imageUrl || m.image_url || m.image || data.imageUrl || data.image_url || data.image || null;
+      let videoUrl = m.videoUrl || m.video_url || m.video || data.videoUrl || data.video_url || data.video || null;
+      let content = m.content || m.text || data.content || data.text || data.output || data.response || "";
+      let type = m.type || data.type || null;
+      const model = data.model || m.model || null;
+
+      // If content is itself an image (data URL or direct image link), promote it.
+      if (typeof content === "string") {
+        const trimmed = content.trim();
+        if (!imageUrl && /^data:image\//i.test(trimmed)) { imageUrl = trimmed; content = ""; }
+        else if (!imageUrl && /^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(trimmed)) { imageUrl = trimmed; content = ""; }
+        else if (!videoUrl && /^https?:\/\/\S+\.(mp4|webm|mov)(\?\S*)?$/i.test(trimmed)) { videoUrl = trimmed; content = ""; }
+      }
+
+      // base64 without data: prefix? wrap it.
+      if (imageUrl && /^[A-Za-z0-9+/=]{200,}$/.test(imageUrl)) {
+        imageUrl = "data:image/png;base64," + imageUrl;
+      }
+
+      if (!type) {
+        if (imageUrl) type = "image";
+        else if (videoUrl) type = "video";
+        else type = "text";
+      }
+      if (!content && type === "text") content = "(empty response)";
+
+      const out = { role: "assistant", content, type };
+      if (imageUrl) out.imageUrl = imageUrl;
+      if (videoUrl) out.videoUrl = videoUrl;
+      if (model) out.model = model;
+      return out;
+    }
+
     function exportActiveSession() {
       const s = activeSession();
       if (!s.messages.length) { showToast("Nothing to export", "err"); return; }
@@ -1444,16 +1489,10 @@
           throw new Error("HTTP " + res.status + (errText ? " · " + errText.slice(0, 200) : ""));
         }
         const data = await res.json();
-        const m = data.message || {};
-        const aiMsg = {
-          role: "assistant",
-          content: m.content || data.content || data.text || "(empty response)",
-          type: m.type || "text",
-          model: data.model || state.model,
-          ts: Date.now()
-        };
-        if (m.imageUrl) aiMsg.imageUrl = m.imageUrl;
-        if (m.videoUrl) aiMsg.videoUrl = m.videoUrl;
+        console.debug("reder ← webhook response:", data);
+        const aiMsg = parseWebhookResponse(data);
+        aiMsg.ts = Date.now();
+        if (!aiMsg.model) aiMsg.model = state.model;
         s.messages.push(aiMsg);
         save();
         appendMessage(aiMsg, true);
