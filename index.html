@@ -1090,9 +1090,9 @@
     }
 
     async function addAttachments(files) {
-      // Image attachments only make sense for the /image2 path right now,
-      // which is gated to IMAGE2_ALLOWED users. Block attaching at the source
-      // for everyone else so paperclip + paste both refuse cleanly.
+      // Image attachments only make sense for /image2 and /image3, both gated
+      // to IMAGE2_ALLOWED users. Block at the source for everyone else so
+      // paperclip + paste both refuse cleanly.
       if (!IMAGE2_ALLOWED.has(currentUser)) {
         showToast("Bilder anhängen ist nur für jere & tayfun freigeschaltet", "err");
         return;
@@ -1100,8 +1100,8 @@
       const list = Array.from(files || []).filter(f => f.type.startsWith("image/"));
       for (const f of list) {
         try {
-          const dataUrl = await fileToDataUrl(f);
-          pendingAttachments.push({ name: f.name, type: f.type, dataUrl });
+          const { dataUrl, type, name } = await fileToResizedDataUrl(f);
+          pendingAttachments.push({ name, type, dataUrl });
         } catch (e) { console.warn(e); }
       }
       fileInput.value = "";
@@ -1115,6 +1115,48 @@
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
+    }
+
+    // Resize huge photos before they go anywhere. Avoids 413 on the n8n
+    // webhook when the user attaches several 4K photos for /image3, and
+    // also keeps the localStorage placeholder churn lower. SVG passes
+    // through untouched (raster resize would rasterize them).
+    async function fileToResizedDataUrl(file, maxSide = 1280, quality = 0.85) {
+      const orig = await fileToDataUrl(file);
+      if (file.type === "image/svg+xml" || file.type === "image/gif") {
+        return { dataUrl: orig, type: file.type, name: file.name };
+      }
+      // Cheap path: small files don't need to round-trip through canvas.
+      if (orig.length < 200 * 1024) {
+        return { dataUrl: orig, type: file.type, name: file.name };
+      }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            const w = img.naturalWidth, h = img.naturalHeight;
+            const max = Math.max(w, h);
+            const scale = max > maxSide ? maxSide / max : 1;
+            const cw = Math.max(1, Math.round(w * scale));
+            const ch = Math.max(1, Math.round(h * scale));
+            const canvas = document.createElement("canvas");
+            canvas.width = cw; canvas.height = ch;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, cw, ch);
+            // JPEG for non-png originals (smaller); PNG for PNG to keep alpha.
+            const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+            resolve(canvas.toDataURL(mime, quality));
+          };
+          img.onerror = reject;
+          img.src = orig;
+        });
+        const newType = file.type === "image/png" ? "image/png" : "image/jpeg";
+        const newName = file.type === "image/png" ? file.name : file.name.replace(/\.\w+$/, ".jpg");
+        return { dataUrl, type: newType, name: newName };
+      } catch (e) {
+        console.warn("resize failed, sending original:", e);
+        return { dataUrl: orig, type: file.type, name: file.name };
+      }
     }
 
     function handlePaste(e) {
@@ -1836,13 +1878,17 @@
             ...(m.attachments ? { attachments: m.attachments } : {})
           };
         });
+        // Attachments live in messages[].attachments. We previously also sent
+        // them at top level as `attachments`, which doubled the request body
+        // (3 photos => 6 base64 blobs => 50–60MB => 413 from nginx => the
+        // browser surfaces it as 'Failed to fetch'). The n8n parsers all
+        // prefer last-message attachments anyway, so drop the duplicate.
         const payload = {
           sessionId: s.id,
           user: currentUser,
           model: state.model,
           systemPrompt: state.systemPrompt || "You are a helpful assistant.",
-          messages: payloadMessages,
-          attachments: sentAttachments
+          messages: payloadMessages
         };
         // /image2 and /image3 each have their own n8n webhook.
         const targetUrl =
