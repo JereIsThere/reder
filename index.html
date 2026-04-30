@@ -646,7 +646,7 @@
             <option value="gemini-1.5-flash">gemini-1.5-flash</option>
           </optgroup>
         </select>
-        <div class="field-hint"><span class="slash-hint">/image</span> rendert parallel via Gemini · Flux · DALL-E · <span class="slash-hint">/video</span> via Veo 3</div>
+        <div class="field-hint" id="modelFieldHint"><span class="slash-hint">/image</span> rendert parallel via Gemini · Flux · DALL-E · <span class="slash-hint">/video</span> via Veo 3</div>
       </div>
 
       <div class="field">
@@ -720,6 +720,7 @@
           <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline ·
           <span class="slash-hint">/image</span>
           <span class="slash-hint">/video</span>
+          <span class="slash-hint" id="image2Hint" hidden>/image2</span>
         </span>
         <span id="modelHint"></span>
       </div>
@@ -740,8 +741,12 @@
     patrick: { salt: "4348e47536ba1586", hash: "12ef8ee02da4edc42ae26311505a541c10406375419db738124393533cfcc395" },
     mamer:   { salt: "0a9dbea40dceb857", hash: "de41da3aa2628af61d86dfc200bb5e156ba09d63ce48b2e6d1c7c0f183f2ecdf" },
     paper:   { salt: "a009e47e5785ad17", hash: "bb1924ef94bd29ccc35de32e9601b3cd928a3b687fa1168f6eed99f8990ca7c8" },
-    daniel:  { salt: "984069c61d40f51f", hash: "c21c6e47876dee3d106f47462caedba1185c3899041ab120c02cf9d58bc2b07c" }
+    daniel:  { salt: "984069c61d40f51f", hash: "c21c6e47876dee3d106f47462caedba1185c3899041ab120c02cf9d58bc2b07c" },
+    tayfun:  { salt: "0a437fe8d4fd3a8f", hash: "d07cab8e5920c8ba15c3460d2067b886a4df909465c4fe85ad14e74e1823aa2c" }
   };
+  // Users authorized for /image2 (image-with-reference generation, advanced flow).
+  // Server-side check in n8n is the source of truth — this set just hides the slash hint.
+  const IMAGE2_ALLOWED = new Set(["jere", "tayfun"]);
   const SESSION_KEY = "reder.auth.user.v2";
 
   async function sha256Hex(str) {
@@ -893,6 +898,17 @@
     const lightboxImg = $("lightboxImg");
 
     signedAsEl.textContent = "@" + currentUser;
+
+    // /image2 visibility — only for allowed users
+    if (IMAGE2_ALLOWED.has(currentUser)) {
+      const image2Hint = document.getElementById("image2Hint");
+      if (image2Hint) image2Hint.hidden = false;
+      const fieldHint = document.getElementById("modelFieldHint");
+      if (fieldHint) {
+        fieldHint.innerHTML = '<span class="slash-hint">/image</span> · <span class="slash-hint">/image2</span> (mit Bild-Anhang) · <span class="slash-hint">/video</span> via Veo 3';
+      }
+      inputEl.placeholder = "Type a message…  (try /image, /image2 with attachment, /video)";
+    }
 
     // ── State ───────────────────────────────────────
     const state = load() || {
@@ -1498,9 +1514,19 @@
       const div = document.createElement("div");
       div.className = "msg assistant typing-row";
       const m = state.model.toLowerCase();
-      const kind = intent === "image" ? "image" : (intent === "video" ? "video" : (m.startsWith("claude") ? "claude" : "gemini"));
-      const author = intent === "image" ? "Image" : (intent === "video" ? "Video" : (m.startsWith("claude") ? "Claude" : m.startsWith("gpt") ? "ChatGPT" : "Gemini"));
-      const label = intent === "image" ? "gemini · flux · dall-e" : (intent === "video" ? "veo-3.0" : state.model);
+      const kind = (intent === "image" || intent === "image2") ? "image"
+        : intent === "video" ? "video"
+        : m.startsWith("claude") ? "claude" : "gemini";
+      const author = intent === "image2" ? "Image2"
+        : intent === "image"  ? "Image"
+        : intent === "video"  ? "Video"
+        : m.startsWith("claude") ? "Claude"
+        : m.startsWith("gpt")    ? "ChatGPT"
+        : "Gemini";
+      const label = intent === "image2" ? "image2 · gemini + flux-kontext"
+        : intent === "image" ? "gemini · flux · dall-e"
+        : intent === "video" ? "veo-3.0"
+        : state.model;
       div.innerHTML = `
         <div class="msg-avatar ${kind}">${ICONS[kind]}</div>
         <div class="msg-body">
@@ -1645,7 +1671,31 @@
 
       sendBtn.disabled = true;
       setStatus("busy", "thinking…");
-      const intent = /^\s*\/image\s+/i.test(text) ? "image" : (/^\s*\/video\s+/i.test(text) ? "video" : "chat");
+      const intent = /^\s*\/image2\s+/i.test(text)
+        ? "image2"
+        : /^\s*\/image\s+/i.test(text) ? "image"
+        : /^\s*\/video\s+/i.test(text) ? "video"
+        : "chat";
+
+      // /image2 needs a reference image attached
+      if (intent === "image2" && (!sentAttachments || sentAttachments.length === 0)) {
+        showToast("/image2 braucht ein Bild als Anhang (Paperclip oder paste)", "err");
+        sendBtn.disabled = false;
+        setStatus("err", "missing image");
+        // restore the user input so they can try again
+        inputEl.value = text;
+        autosize();
+        return;
+      }
+      // client-side gate (server-side check is authoritative)
+      if (intent === "image2" && !IMAGE2_ALLOWED.has(currentUser)) {
+        showToast("/image2 ist für deinen Account nicht freigeschaltet", "err");
+        sendBtn.disabled = false;
+        setStatus("err", "not allowed");
+        inputEl.value = text;
+        autosize();
+        return;
+      }
       const typingEl = appendTyping(intent);
 
       try {
