@@ -1711,7 +1711,11 @@
           })),
           attachments: sentAttachments
         };
-        const res = await fetch(state.webhookUrl, {
+        // /image2 routes to a separate webhook (advanced flow, image+text -> image)
+        const targetUrl = intent === "image2"
+          ? state.webhookUrl.replace(/\/ai-chat\/?$/, "/ai-chat-image2")
+          : state.webhookUrl;
+        const res = await fetch(targetUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
