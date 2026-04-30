@@ -1,0 +1,36 @@
+name: Deploy to server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull latest on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            TARGET=/var/www/reder
+            sudo mkdir -p "$TARGET"
+            if [ -d "$TARGET/.git" ]; then
+              cd "$TARGET"
+              sudo git fetch --all --quiet
+              sudo git reset --hard origin/main
+            else
+              sudo git clone https://github.com/JereIsThere/reder.git "$TARGET"
+            fi
+            sudo chown -R ${{ secrets.SSH_USER }}:www-data "$TARGET"
+            echo "deployed: $(cd "$TARGET" && git rev-parse --short HEAD)"
