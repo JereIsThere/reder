@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0a0a0a">
-<title>reder</title>
+<title>sprecher</title>
 <style>
   *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -64,6 +64,8 @@
   .auth-brand .label { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: var(--text-faint); }
   .auth-brand .name { font-size: 30px; font-weight: 800; letter-spacing: -.6px; display: inline-flex; align-items: baseline; gap: 6px; }
   .auth-brand .name .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; transform: translateY(-3px); }
+  .auth-brand .name .mouth { display: inline-block; vertical-align: middle; transform: translateY(-2px); margin-left: 4px; }
+  .auth-brand .name .mouth svg { width: 26px; height: 12px; }
   .auth-form { display: flex; flex-direction: column; gap: 10px; }
   .auth-form input {
     background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
@@ -118,6 +120,10 @@
     display: inline-flex; align-items: baseline; gap: 6px;
   }
   .brand-name .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; transform: translateY(-2px); }
+  .brand-name .mouth { display: inline-block; vertical-align: middle; transform: translateY(-1px); margin-left: 3px; }
+  .brand-name .mouth svg { width: 20px; height: 9px; }
+  .mouth path.lip { fill: var(--accent); }
+  .mouth path.line { stroke: rgba(255,210,184,0.55); stroke-width: 0.7; fill: none; }
   .brand-name .ext { color: var(--text-faint); font-size: 11px; font-weight: 500; letter-spacing: 2px; text-transform: uppercase; margin-left: 2px; }
 
   .sidebar-toggle-mobile {
@@ -587,7 +593,7 @@
   <div class="auth-card">
     <div class="auth-brand">
       <span class="label">Sign in</span>
-      <span class="name">reder<span class="dot"></span></span>
+      <span class="name">sprecher<span class="mouth" aria-hidden="true"><svg viewBox="0 0 26 12"><path class="lip" d="M1 6 Q 13 -2 25 6 Q 13 14 1 6 Z"/><path class="line" d="M1 6 Q 13 3 25 6"/></svg></span></span>
     </div>
     <form id="authForm" class="auth-form" autocomplete="on">
       <input id="authUser" type="text" placeholder="Username" autocomplete="username" required spellcheck="false" autocapitalize="off">
@@ -610,7 +616,7 @@
     <div class="sidebar-header">
       <div class="brand-block">
         <div class="brand">chat <span style="color:var(--accent)">·</span> via n8n</div>
-        <div class="brand-name">reder<span class="dot"></span><span class="ext">v1</span></div>
+        <div class="brand-name">sprecher<span class="mouth" aria-hidden="true"><svg viewBox="0 0 24 10"><path class="lip" d="M1 5 Q 12 -2 23 5 Q 12 12 1 5 Z"/><path class="line" d="M1 5 Q 12 2 23 5"/></svg></span><span class="ext">v1</span></div>
       </div>
       <button class="sidebar-toggle-mobile icon-btn" id="sidebarCloseBtn" title="Close">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -1588,7 +1594,7 @@
     function exportActiveSession() {
       const s = activeSession();
       if (!s.messages.length) { showToast("Nothing to export", "err"); return; }
-      const title = s.title || autoTitle(s) || "reder-session";
+      const title = s.title || autoTitle(s) || "sprecher-session";
       const lines = [`# ${title}`, "", `_Exported ${new Date().toISOString()} · model ${state.model} · @${currentUser}_`, ""];
       for (const m of s.messages) {
         const who = m.role === "user" ? `**@${currentUser}**` : (m.role === "error" ? "**Error**" : `**${authorFor(m)}** _(${m.model || state.model})_`);
@@ -1666,7 +1672,7 @@
           throw new Error("HTTP " + res.status + (errText ? " · " + errText.slice(0, 200) : ""));
         }
         const data = await res.json();
-        console.debug("reder ← webhook response:", data);
+        console.debug("sprecher ← webhook response:", data);
         const aiMsg = parseWebhookResponse(data);
         aiMsg.ts = Date.now();
         if (!aiMsg.model) aiMsg.model = state.model;

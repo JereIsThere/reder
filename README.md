@@ -1,17 +1,19 @@
-# reder
+# sprecher 👄
 
-A single-file chat UI that talks to an [n8n](https://n8n.io) webhook of your choice.
+A single-file chat UI that talks to an [n8n](https://n8n.io) webhook of your choice. Sibling of [auge](https://github.com/JereIsThere/auge) — wo auge zeigt, spricht sprecher.
 
 - Vanilla HTML / CSS / JS — no build step, no dependencies.
 - Markdown rendering, code blocks with copy, image attachments (paste or pick), session rename, mobile drawer, Markdown export.
-- Multiple sessions per user, persisted in `localStorage` and **scoped per signed-in user** (`reder.v1.<user>`), so two people sharing a browser don't see each other's chats.
+- Multiple sessions per user, persisted in `localStorage` and **scoped per signed-in user** (key `reder.v1.<user>` — kept stable across the rebrand so existing chats survive), so two people sharing a browser don't see each other's chats.
 - Slash commands `/image` and `/video` if your n8n flow supports them.
 
-Live: <https://jereisthere.github.io/reder/>
+Live: <https://reder.jeremias-groehl.de> (custom domain on the user's own server, not GitHub Pages — auto-deploy via GitHub Actions on every push to main)
+
+> Repo and storage keys still use `reder` for stability. The codename `sprecher` is the user-facing brand only.
 
 ## Auth
 
-Two hardcoded users: **jere** and **patrick**. The page is gated by a client-side login that compares `SHA-256(salt + password)` against an embedded hash. This is a "keep casual visitors out" gate, not real security — anyone determined can extract the hash from the JS source and try to brute-force it. Use strong passwords and treat this as interim.
+Five hardcoded users: **jere**, **patrick**, **mamer**, **paper**, **daniel**. The page is gated by a client-side login that compares `SHA-256(salt + password)` against an embedded hash. This is a "keep casual visitors out" gate, not real security — anyone determined can extract the hash from the JS source and try to brute-force it. Use strong passwords and treat this as interim.
 
 ### Rotate a password
 
@@ -26,13 +28,17 @@ Two hardcoded users: **jere** and **patrick**. The page is gated by a client-sid
    ```
 
 3. In `index.html`, find `AUTH_USERS` and replace the user's `salt` and `hash` with the new values.
-4. Commit and push — Pages will rebuild within a minute.
+4. Commit and push — GitHub Actions will redeploy to the server within ~30s.
 
-To force everyone to log out after rotation, also bump `SESSION_KEY` (e.g. `"reder.auth.user.v2"`).
+To force everyone to log out after rotation, also bump `SESSION_KEY` (e.g. `"reder.auth.user.v3"`).
+
+### Invite link
+
+Append `#u=<user>&p=<password>` to the URL — username and password are pre-filled and auto-submitted, then the hash is wiped from the address bar.
 
 ## Use
 
-Open `index.html`, sign in, paste your webhook URL into the sidebar, talk.
+Open the live URL, sign in, paste your webhook URL into the sidebar, talk.
 
 ## n8n contract
 
@@ -49,7 +55,7 @@ The page POSTs JSON to your webhook:
 }
 ```
 
-It expects JSON back, shape:
+It expects JSON back. Plain text:
 
 ```json
 {
@@ -58,4 +64,4 @@ It expects JSON back, shape:
 }
 ```
 
-For images/videos return `{"message": {"type": "image", "imageUrl": "..."}}` or `videoUrl`.
+For media: `{"message": {"type": "image", "imageUrl": "..."}}`, or `{"type": "video", "videoUrl": "..."}`, or for parallel renders `{"type": "multi-image", "images": [{"model": "...", "imageUrl": "...", "costUsd": 0.025}, ...], "totalCostUsd": 0.065}`.
