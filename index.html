@@ -728,6 +728,7 @@
           <span class="slash-hint">/image</span>
           <span class="slash-hint">/video</span>
           <span class="slash-hint" id="image2Hint" hidden>/image2</span>
+          <span class="slash-hint" id="image3Hint" hidden>/image3</span>
         </span>
         <span id="modelHint"></span>
       </div>
@@ -906,17 +907,19 @@
 
     signedAsEl.textContent = "@" + currentUser;
 
-    // image2 hint visibility — only for allowed users
+    // image2/image3 hint visibility — only for allowed users
     if (IMAGE2_ALLOWED.has(currentUser)) {
       const image2Hint = document.getElementById("image2Hint");
       if (image2Hint) image2Hint.hidden = false;
+      const image3Hint = document.getElementById("image3Hint");
+      if (image3Hint) image3Hint.hidden = false;
       const fieldHint = document.getElementById("modelFieldHint");
       if (fieldHint) {
-        fieldHint.innerHTML = '<span class="slash-hint">/image</span> rendert parallel · Bild + Text → <span class="slash-hint">image2</span> (auto) · <span class="slash-hint">/video</span> via Veo 3';
+        fieldHint.innerHTML = '<span class="slash-hint">/image</span> rendert parallel · 1 Bild + Text → <span class="slash-hint">image2</span> · 2-3 Bilder + Text → <span class="slash-hint">image3</span> · <span class="slash-hint">/video</span> via Veo 3';
       }
-      inputEl.placeholder = "Type a message…  (Bild anhängen für image+text → image, oder /image / /video)";
+      inputEl.placeholder = "Type a message…  (1 Bild → image2, 2-3 Bilder → image3, oder /image / /video)";
     } else {
-      // Hide the paperclip for users who can't use /image2 anyway.
+      // Hide the paperclip for users who can't use /image2 or /image3 anyway.
       attachBtn.style.display = "none";
     }
 
@@ -1589,16 +1592,18 @@
       const div = document.createElement("div");
       div.className = "msg assistant typing-row";
       const m = state.model.toLowerCase();
-      const kind = (intent === "image" || intent === "image2") ? "image"
+      const kind = (intent === "image" || intent === "image2" || intent === "image3") ? "image"
         : intent === "video" ? "video"
         : m.startsWith("claude") ? "claude" : "gemini";
-      const author = intent === "image2" ? "Image2"
+      const author = intent === "image3" ? "Image3"
+        : intent === "image2" ? "Image2"
         : intent === "image"  ? "Image"
         : intent === "video"  ? "Video"
         : m.startsWith("claude") ? "Claude"
         : m.startsWith("gpt")    ? "ChatGPT"
         : "Gemini";
-      const label = intent === "image2" ? "image2 · gemini + flux-kontext"
+      const label = intent === "image3" ? "image3 · gemini multi-ref"
+        : intent === "image2" ? "image2 · gemini"
         : intent === "image" ? "gemini · flux · dall-e"
         : intent === "video" ? "veo-3.0"
         : state.model;
@@ -1746,18 +1751,20 @@
 
       sendBtn.disabled = true;
       setStatus("busy", "thinking…");
-      // Slash command takes precedence; otherwise auto-promote chat → image2
-      // when an attachment is queued (image+text is what /image2 was made for).
-      let intent = /^\s*\/image2\s+/i.test(text)
-        ? "image2"
+      // Slash command takes precedence; otherwise auto-promote chat → image2/3
+      // by attachment count (1 → image2, 2-3 → image3). image3 is gated to the
+      // same IMAGE2_ALLOWED set on the client; n8n re-checks server-side.
+      let intent = /^\s*\/image3\s+/i.test(text) ? "image3"
+        : /^\s*\/image2\s+/i.test(text) ? "image2"
         : /^\s*\/image\s+/i.test(text) ? "image"
         : /^\s*\/video\s+/i.test(text) ? "video"
         : "chat";
 
-      const hasAttachment = sentAttachments && sentAttachments.length > 0;
+      const attachmentCount = sentAttachments ? sentAttachments.length : 0;
+      const hasAttachment = attachmentCount > 0;
       if (intent === "chat" && hasAttachment && text) {
         if (IMAGE2_ALLOWED.has(currentUser)) {
-          intent = "image2";  // implicit /image2 for allowed users
+          intent = attachmentCount >= 2 ? "image3" : "image2";
         } else {
           showToast("Bilder anhängen ist nur für jere & tayfun freigeschaltet", "err");
           sendBtn.disabled = false;
@@ -1770,18 +1777,35 @@
         }
       }
 
-      // /image2 needs a reference image attached (also covers explicit /image2 prefix)
+      // /image2 needs exactly 1 image (n8n picks the first one anyway).
       if (intent === "image2" && !hasAttachment) {
-        showToast("/image2 braucht ein Bild als Anhang (Paperclip oder paste)", "err");
+        showToast("/image2 braucht ein Bild als Anhang", "err");
         sendBtn.disabled = false;
         setStatus("err", "missing image");
         inputEl.value = text;
         autosize();
         return;
       }
-      // client-side gate (server-side check is authoritative)
-      if (intent === "image2" && !IMAGE2_ALLOWED.has(currentUser)) {
-        showToast("/image2 ist für deinen Account nicht freigeschaltet", "err");
+      // /image3 needs 2-3 images.
+      if (intent === "image3") {
+        if (attachmentCount < 2) {
+          showToast("/image3 braucht 2 oder 3 Bilder als Anhang", "err");
+          sendBtn.disabled = false;
+          setStatus("err", "need 2-3 images");
+          inputEl.value = text;
+          pendingAttachments = sentAttachments.slice();
+          renderAttachmentsPreview();
+          autosize();
+          return;
+        }
+        if (attachmentCount > 3) {
+          showToast("/image3 nimmt max 3 Bilder — die ersten 3 werden verwendet", "");
+          sentAttachments = sentAttachments.slice(0, 3);
+        }
+      }
+      // client-side gate for both image2 and image3 (server is authoritative)
+      if ((intent === "image2" || intent === "image3") && !IMAGE2_ALLOWED.has(currentUser)) {
+        showToast(intent + " ist für deinen Account nicht freigeschaltet", "err");
         sendBtn.disabled = false;
         setStatus("err", "not allowed");
         inputEl.value = text;
@@ -1799,13 +1823,12 @@
         const payloadMessages = s.messages.map((m, i) => {
           const isLast = i === s.messages.length - 1;
           let content = m.content;
-          if (
-            isLast &&
-            m.role === "user" &&
-            intent === "image2" &&
-            !/^\s*\/image2\s/i.test(content)
-          ) {
-            content = "/image2 " + content;
+          if (isLast && m.role === "user") {
+            if (intent === "image3" && !/^\s*\/image3\s/i.test(content)) {
+              content = "/image3 " + content;
+            } else if (intent === "image2" && !/^\s*\/image2\s/i.test(content)) {
+              content = "/image2 " + content;
+            }
           }
           return {
             role: m.role,
@@ -1821,9 +1844,10 @@
           messages: payloadMessages,
           attachments: sentAttachments
         };
-        // /image2 routes to a separate webhook (advanced flow, image+text -> image)
-        const targetUrl = intent === "image2"
-          ? state.webhookUrl.replace(/\/ai-chat\/?$/, "/ai-chat-image2")
+        // /image2 and /image3 each have their own n8n webhook.
+        const targetUrl =
+          intent === "image3" ? state.webhookUrl.replace(/\/ai-chat\/?$/, "/ai-chat-image3")
+          : intent === "image2" ? state.webhookUrl.replace(/\/ai-chat\/?$/, "/ai-chat-image2")
           : state.webhookUrl;
         const res = await fetch(targetUrl, {
           method: "POST",
