@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='10' fill='%23ff5c28'/><path d='M5 13 Q 12 5 19 13 Q 12 21 5 13 Z' fill='%23191408'/></svg>" type="image/svg+xml">
 <title>sprecher</title>
 <style>
   *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -450,6 +451,12 @@
     padding: 8px; border: 1px dashed var(--error); border-radius: 7px;
     color: var(--error); font-size: 11px; font-family: ui-monospace, monospace;
     word-break: break-all; line-height: 1.4;
+  }
+  .stripped-media {
+    padding: 14px 16px; border: 1px dashed var(--border-strong); border-radius: 8px;
+    color: var(--text-faint); font-size: 11.5px; font-style: italic;
+    background: rgba(255,255,255,0.02);
+    text-align: center;
   }
 
   .typing { display: inline-flex; gap: 4px; padding: 6px 0; }
@@ -1131,6 +1138,21 @@
       });
     }
 
+    function isStripped(url) {
+      // save() replaces big data: URLs with placeholders like
+      // "[media stripped on save]" / "[attachment stripped on save]"
+      // so they don't blow the localStorage quota. On reload these come
+      // back as ordinary strings — must NOT be put into <img src="…">.
+      return typeof url === "string" && url.startsWith("[") && url.endsWith("]");
+    }
+
+    function strippedFallback(label) {
+      const div = document.createElement("div");
+      div.className = "stripped-media";
+      div.textContent = label || "Bild verloren beim Reload — vor Refresh kopieren / downloaden";
+      return div;
+    }
+
     function escapeHtml(s) {
       return String(s ?? "")
         .replace(/&/g, "&amp;")
@@ -1405,7 +1427,9 @@
         for (const img of m.images) {
           const cell = document.createElement("div");
           cell.className = "multi-image-cell";
-          if (img.imageUrl) {
+          if (img.imageUrl && isStripped(img.imageUrl)) {
+            cell.appendChild(strippedFallback("Bild verloren beim Reload"));
+          } else if (img.imageUrl) {
             const i = document.createElement("img");
             i.src = img.imageUrl;
             i.alt = img.model || "generated image";
@@ -1452,20 +1476,24 @@
           cap.textContent = m.content;
           bubble.appendChild(cap);
         }
-        const media = document.createElement("div");
-        media.className = "msg-media";
-        const img = document.createElement("img");
-        img.src = m.imageUrl;
-        img.alt = m.content || "generated image";
-        img.addEventListener("click", () => openLightbox(m.imageUrl));
-        img.addEventListener("error", () => {
-          const fallback = document.createElement("div");
-          fallback.style.cssText = "padding:10px;border:1px dashed var(--error);border-radius:8px;color:var(--error);font-size:12px;font-family:ui-monospace,monospace;word-break:break-all;line-height:1.5;";
-          fallback.textContent = "Image failed to load · " + img.src.slice(0, 200) + (img.src.length > 200 ? "…" : "");
-          img.replaceWith(fallback);
-        });
-        media.appendChild(img);
-        bubble.appendChild(media);
+        if (isStripped(m.imageUrl)) {
+          bubble.appendChild(strippedFallback());
+        } else {
+          const media = document.createElement("div");
+          media.className = "msg-media";
+          const img = document.createElement("img");
+          img.src = m.imageUrl;
+          img.alt = m.content || "generated image";
+          img.addEventListener("click", () => openLightbox(m.imageUrl));
+          img.addEventListener("error", () => {
+            const fallback = document.createElement("div");
+            fallback.style.cssText = "padding:10px;border:1px dashed var(--error);border-radius:8px;color:var(--error);font-size:12px;font-family:ui-monospace,monospace;word-break:break-all;line-height:1.5;";
+            fallback.textContent = "Image failed to load · " + img.src.slice(0, 200) + (img.src.length > 200 ? "…" : "");
+            img.replaceWith(fallback);
+          });
+          media.appendChild(img);
+          bubble.appendChild(media);
+        }
       } else if (m.type === "video" && m.videoUrl) {
         if (m.content) {
           const cap = document.createElement("div");
@@ -1473,14 +1501,18 @@
           cap.textContent = m.content;
           bubble.appendChild(cap);
         }
-        const media = document.createElement("div");
-        media.className = "msg-media";
-        const vid = document.createElement("video");
-        vid.src = m.videoUrl;
-        vid.controls = true;
-        vid.playsInline = true;
-        media.appendChild(vid);
-        bubble.appendChild(media);
+        if (isStripped(m.videoUrl)) {
+          bubble.appendChild(strippedFallback("Video verloren beim Reload"));
+        } else {
+          const media = document.createElement("div");
+          media.className = "msg-media";
+          const vid = document.createElement("video");
+          vid.src = m.videoUrl;
+          vid.controls = true;
+          vid.playsInline = true;
+          media.appendChild(vid);
+          bubble.appendChild(media);
+        }
       } else if (m.role === "assistant") {
         bubble.classList.add("md");
         bubble.innerHTML = renderMarkdown(m.content || "");
@@ -1500,7 +1532,9 @@
           const wrap = document.createElement("div");
           wrap.className = "msg-attachments";
           for (const a of m.attachments) {
-            if (a.dataUrl && a.type?.startsWith("image/")) {
+            if (a.dataUrl && isStripped(a.dataUrl)) {
+              wrap.appendChild(strippedFallback("Anhang verloren beim Reload"));
+            } else if (a.dataUrl && a.type?.startsWith("image/")) {
               const img = document.createElement("img");
               img.src = a.dataUrl;
               img.alt = a.name || "";
