@@ -1791,16 +1791,34 @@
       const typingEl = appendTyping(intent);
 
       try {
+        // Build the messages array. For implicit /image2 (auto-promoted from
+        // attachment+text without slash keyword), inject the "/image2 " prefix
+        // on the last user message ONLY in the webhook payload — local
+        // s.messages keeps the user-typed text clean. The n8n /image2 parser
+        // still expects the slash prefix to extract the prompt.
+        const payloadMessages = s.messages.map((m, i) => {
+          const isLast = i === s.messages.length - 1;
+          let content = m.content;
+          if (
+            isLast &&
+            m.role === "user" &&
+            intent === "image2" &&
+            !/^\s*\/image2\s/i.test(content)
+          ) {
+            content = "/image2 " + content;
+          }
+          return {
+            role: m.role,
+            content,
+            ...(m.attachments ? { attachments: m.attachments } : {})
+          };
+        });
         const payload = {
           sessionId: s.id,
           user: currentUser,
           model: state.model,
           systemPrompt: state.systemPrompt || "You are a helpful assistant.",
-          messages: s.messages.map(m => ({
-            role: m.role,
-            content: m.content,
-            ...(m.attachments ? { attachments: m.attachments } : {})
-          })),
+          messages: payloadMessages,
           attachments: sentAttachments
         };
         // /image2 routes to a separate webhook (advanced flow, image+text -> image)
