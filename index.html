@@ -983,9 +983,40 @@
     function blankSession(id) { return { id, createdAt: Date.now(), messages: [], title: "" }; }
     function activeSession() { return state.sessions[state.activeSessionId]; }
     function load() { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch { return null; } }
+    // Strips inline data:image/data:video URLs and large attachment dataUrls
+    // from the JSON form being saved. Base64 media easily blows past the 5-10MB
+    // localStorage quota after a few /image calls, then save() throws and
+    // (worse) the next fetch can hang or fail. Placeholders survive the round
+    // trip; on reload the images are gone but the conversation text remains.
+    function saveReplacer(_key, value) {
+      if (typeof value !== "string") return value;
+      if ((_key === "imageUrl" || _key === "videoUrl") && value.startsWith("data:")) {
+        return "[media stripped on save]";
+      }
+      if (_key === "dataUrl" && value.startsWith("data:") && value.length > 16 * 1024) {
+        return "[attachment stripped on save]";
+      }
+      return value;
+    }
     function save() {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
-      catch { console.warn("localStorage full — state kept in memory only"); }
+      const json = JSON.stringify(state, saveReplacer);
+      try {
+        localStorage.setItem(STORE_KEY, json);
+      } catch (e) {
+        console.warn("localStorage save failed (probably quota), trying minimal:", e);
+        try {
+          // Last-ditch: keep only the active session, strip everything else.
+          const trimmed = {
+            ...state,
+            sessions: { [state.activeSessionId]: state.sessions[state.activeSessionId] }
+          };
+          localStorage.setItem(STORE_KEY, JSON.stringify(trimmed, saveReplacer));
+          showToast("Speicher voll — alte Sessions gelöscht beim Speichern", "err");
+        } catch {
+          console.warn("localStorage still full after trim — state kept in memory only");
+          showToast("Speicher voll — Verlauf bleibt nur in dieser Tab", "err");
+        }
+      }
     }
 
     function createSession() {
