@@ -419,10 +419,27 @@
     background: #0d0d0d; border: 1px solid var(--border);
     border-radius: 10px; padding: 6px;
   }
+  .multi-image-cell { position: relative; }
   .multi-image-cell img {
     width: 100%; height: 200px; object-fit: cover;
     border-radius: 7px; background: #000;
     cursor: zoom-in; display: block;
+  }
+  .multi-image-cell .save-btn {
+    position: absolute; top: 10px; right: 10px;
+    background: rgba(10,10,16,0.7); color: var(--text); border: 1px solid rgba(255,255,255,0.18);
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity .15s, background .15s;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .multi-image-cell:hover .save-btn { opacity: 1; }
+  .multi-image-cell .save-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .multi-image-cell .save-btn svg { width: 15px; height: 15px; }
+  /* On touch screens hover doesn't fire — show the button always */
+  @media (hover: none) {
+    .multi-image-cell .save-btn { opacity: 0.9; }
   }
   .multi-image-label {
     display: flex; align-items: center; justify-content: space-between;
@@ -563,6 +580,20 @@
   }
   .lightbox.show { display: flex; }
   .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  .lightbox-toolbar {
+    position: absolute; top: env(safe-area-inset-top, 12px); right: 16px;
+    display: flex; gap: 8px; z-index: 1;
+  }
+  .lightbox-toolbar button {
+    background: rgba(20,20,28,0.85); border: 1px solid rgba(255,255,255,0.18); color: #fff;
+    width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: background .15s, border-color .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .lightbox-toolbar button:hover { background: var(--accent); border-color: var(--accent); }
+  .lightbox-toolbar button svg { width: 18px; height: 18px; }
 
   .backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,.55);
@@ -590,6 +621,55 @@
     .composer { padding: 12px 16px 16px; }
     .topbar { padding: 0 14px; }
     .empty-state { padding: 40px 16px 20px; }
+  }
+
+  /* Phone-size: tighter padding, bigger touch targets, single-col image grid */
+  @media (max-width: 480px) {
+    .topbar { height: 52px; padding: 0 10px; gap: 8px; }
+    .topbar-title { font-size: 13px; }
+    .model-tag { font-size: 9px; letter-spacing: 1.5px; }
+    /* Bigger tap area for icon buttons (Apple HIG: 44x44 minimum) */
+    .icon-btn { width: 36px; height: 36px; }
+    .icon-btn svg { width: 16px; height: 16px; }
+
+    .messages { padding: 16px 12px 10px; }
+    .messages-inner { gap: 18px; }
+    .msg { gap: 10px; }
+    .msg-avatar { width: 30px; height: 30px; border-radius: 8px; }
+    .msg-avatar svg { width: 15px; height: 15px; }
+    .msg-body { max-width: calc(100% - 40px); }
+    .msg-bubble { padding: 10px 12px; font-size: 14px; line-height: 1.55; }
+    .msg-meta { font-size: 10.5px; gap: 6px; }
+
+    .md pre { padding: 10px 12px; font-size: 11.5px; }
+    .md pre.has-lang { padding-top: 24px; }
+    .md ul, .md ol { padding-left: 1.2em; }
+
+    /* Multi-image gallery stacks single-col on phones so each cell fills width */
+    .msg-multi-images { grid-template-columns: 1fr; gap: 6px; }
+    .multi-image-cell img { height: auto; max-height: 320px; }
+
+    .composer { padding: 10px 10px 14px; }
+    .composer-inner { border-radius: 12px; padding: 4px; gap: 2px; }
+    .composer textarea { font-size: 16px; padding: 9px 6px; min-height: 22px; }
+    .send-btn, .attach-btn { width: 40px; height: 40px; border-radius: 8px; }
+    .composer-hint { font-size: 10.5px; gap: 8px; }
+
+    .auth-card { padding: 22px 18px; border-radius: 14px; }
+    .auth-brand .name { font-size: 26px; }
+    .auth-form input { font-size: 16px; padding: 12px 14px; }
+    .auth-btn { font-size: 16px; padding: 12px 14px; }
+
+    .session-item { padding: 10px 10px; }
+    .session-action { padding: 6px 8px; font-size: 14px; }
+  }
+
+  /* Tiny phones (e.g. iPhone SE 1st gen at 320px): squeeze further */
+  @media (max-width: 360px) {
+    .topbar-title { font-size: 12px; }
+    .model-tag { display: none; }
+    .brand-name .ext { display: none; }
+    .composer-hint { display: none; }
   }
 </style>
 </head>
@@ -737,7 +817,17 @@
 </div>
 
 <div class="toast" id="toast"></div>
-<div class="lightbox" id="lightbox"><img id="lightboxImg" alt=""></div>
+<div class="lightbox" id="lightbox">
+  <div class="lightbox-toolbar">
+    <button type="button" id="lightboxSaveBtn" title="Bild speichern" aria-label="Bild speichern">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+    </button>
+    <button type="button" id="lightboxCloseBtn" title="Schließen" aria-label="Schließen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <img id="lightboxImg" alt="">
+</div>
 
 <script>
 (() => {
@@ -985,7 +1075,27 @@
       }
     });
 
-    lightboxEl.addEventListener("click", () => lightboxEl.classList.remove("show"));
+    lightboxEl.addEventListener("click", (e) => {
+      // Don't close when clicking the toolbar or the image itself —
+      // only when clicking the dim backdrop.
+      if (e.target === lightboxEl || e.target === lightboxImg) {
+        lightboxEl.classList.remove("show");
+      }
+    });
+    const lightboxSaveBtn = document.getElementById("lightboxSaveBtn");
+    const lightboxCloseBtn = document.getElementById("lightboxCloseBtn");
+    if (lightboxSaveBtn) {
+      lightboxSaveBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        saveImage(lightboxEl.dataset.src || lightboxImg.src, "sprecher-image-" + Date.now());
+      });
+    }
+    if (lightboxCloseBtn) {
+      lightboxCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        lightboxEl.classList.remove("show");
+      });
+    }
 
     render();
 
@@ -1496,6 +1606,17 @@
               i.replaceWith(fb);
             });
             cell.appendChild(i);
+            const saveBtn = document.createElement("button");
+            saveBtn.type = "button";
+            saveBtn.className = "save-btn";
+            saveBtn.title = "Bild speichern";
+            saveBtn.setAttribute("aria-label", "Bild speichern");
+            saveBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>';
+            saveBtn.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              saveImage(img.imageUrl, (img.model || "image") + "-" + Date.now());
+            });
+            cell.appendChild(saveBtn);
           } else if (img.error) {
             const fb = document.createElement("div");
             fb.className = "multi-image-fallback";
@@ -1687,7 +1808,48 @@
 
     function openLightbox(src) {
       lightboxImg.src = src;
+      lightboxEl.dataset.src = src;
       lightboxEl.classList.add("show");
+    }
+
+    // Save an image (data: or http://...) to the user's device.
+    // For data: URLs we download directly. For remote URLs we fetch into a
+    // blob first so the download attribute actually fires (cross-origin links
+    // ignore download="" otherwise) — falls back to opening in a new tab.
+    async function saveImage(src, baseName) {
+      if (!src) return;
+      const ext = (() => {
+        const md = String(src).match(/^data:image\/([a-z+]+);/i);
+        if (md) return md[1].replace("svg+xml", "svg").replace("jpeg", "jpg");
+        const ud = String(src).match(/\.([a-z]{3,4})(\?|#|$)/i);
+        return (ud && ud[1].toLowerCase()) || "png";
+      })();
+      const fname = (baseName || "image").replace(/[^\w-]+/g, "-").slice(0, 60) + "." + ext;
+      try {
+        let blobUrl;
+        if (src.startsWith("data:")) {
+          // Already a data URL — anchor download works directly.
+          blobUrl = src;
+        } else {
+          const res = await fetch(src, { mode: "cors" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const blob = await res.blob();
+          blobUrl = URL.createObjectURL(blob);
+        }
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = fname;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        if (blobUrl !== src) setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+        showToast("Gespeichert: " + fname, "ok");
+      } catch (e) {
+        // CORS-blocked external URL or similar — open in new tab so user can save manually.
+        window.open(src, "_blank", "noopener");
+        showToast("In neuem Tab geöffnet (zum Speichern)", "");
+      }
     }
 
     function parseWebhookResponse(data) {
