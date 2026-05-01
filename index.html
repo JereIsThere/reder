@@ -425,8 +425,9 @@
     border-radius: 7px; background: #000;
     cursor: zoom-in; display: block;
   }
-  .multi-image-cell .save-btn {
-    position: absolute; top: 10px; right: 10px;
+  .multi-image-cell .save-btn,
+  .multi-image-cell .iter-btn {
+    position: absolute; top: 10px;
     background: rgba(10,10,16,0.7); color: var(--text); border: 1px solid rgba(255,255,255,0.18);
     width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center;
@@ -434,12 +435,18 @@
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     -webkit-tap-highlight-color: transparent;
   }
-  .multi-image-cell:hover .save-btn { opacity: 1; }
-  .multi-image-cell .save-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .multi-image-cell .save-btn svg { width: 15px; height: 15px; }
-  /* On touch screens hover doesn't fire — show the button always */
+  .multi-image-cell .save-btn { right: 10px; }
+  .multi-image-cell .iter-btn { right: 50px; }
+  .multi-image-cell:hover .save-btn,
+  .multi-image-cell:hover .iter-btn { opacity: 1; }
+  .multi-image-cell .save-btn:hover,
+  .multi-image-cell .iter-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .multi-image-cell .save-btn svg,
+  .multi-image-cell .iter-btn svg { width: 15px; height: 15px; }
+  /* On touch screens hover doesn't fire — show the buttons always */
   @media (hover: none) {
-    .multi-image-cell .save-btn { opacity: 0.9; }
+    .multi-image-cell .save-btn,
+    .multi-image-cell .iter-btn { opacity: 0.9; }
   }
   .multi-image-label {
     display: flex; align-items: center; justify-content: space-between;
@@ -650,6 +657,7 @@
     .msg-multi-images { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
     .multi-image-cell img { height: 140px; }
     .multi-image-cell .save-btn { width: 26px; height: 26px; top: 6px; right: 6px; }
+    .multi-image-cell .iter-btn { width: 26px; height: 26px; top: 6px; right: 38px; }
     .multi-image-cell .save-btn svg { width: 12px; height: 12px; }
     .empty-state { padding: 24px 14px 14px; }
     .empty-icon { width: 46px; height: 46px; margin-bottom: 10px; font-size: 20px; }
@@ -828,6 +836,9 @@
 <div class="toast" id="toast"></div>
 <div class="lightbox" id="lightbox">
   <div class="lightbox-toolbar">
+    <button type="button" id="lightboxIterateBtn" title="Mit diesem Bild weiter iterieren" aria-label="Iterieren">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0115.5-6.3M21 4v5h-5"/><path d="M21 12a9 9 0 01-15.5 6.3M3 20v-5h5"/></svg>
+    </button>
     <button type="button" id="lightboxSaveBtn" title="Bild speichern" aria-label="Bild speichern">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
     </button>
@@ -1093,10 +1104,19 @@
     });
     const lightboxSaveBtn = document.getElementById("lightboxSaveBtn");
     const lightboxCloseBtn = document.getElementById("lightboxCloseBtn");
+    const lightboxIterateBtn = document.getElementById("lightboxIterateBtn");
     if (lightboxSaveBtn) {
       lightboxSaveBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         saveImage(lightboxEl.dataset.src || lightboxImg.src, "sprecher-image-" + Date.now());
+      });
+    }
+    if (lightboxIterateBtn) {
+      lightboxIterateBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const src = lightboxEl.dataset.src || lightboxImg.src;
+        iterateFromImage(src, "previous");
+        lightboxEl.classList.remove("show");
       });
     }
     if (lightboxCloseBtn) {
@@ -1681,6 +1701,17 @@
               saveImage(img.imageUrl, (img.model || "image") + "-" + Date.now());
             });
             cell.appendChild(saveBtn);
+            const iterBtn = document.createElement("button");
+            iterBtn.type = "button";
+            iterBtn.className = "iter-btn";
+            iterBtn.title = "Mit diesem Bild weiter iterieren";
+            iterBtn.setAttribute("aria-label", "Iterieren");
+            iterBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0115.5-6.3M21 4v5h-5"/><path d="M21 12a9 9 0 01-15.5 6.3M3 20v-5h5"/></svg>';
+            iterBtn.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              iterateFromImage(img.imageUrl, img.model || "previous");
+            });
+            cell.appendChild(iterBtn);
           } else if (img.error) {
             const fb = document.createElement("div");
             fb.className = "multi-image-fallback";
@@ -1874,6 +1905,48 @@
       lightboxImg.src = src;
       lightboxEl.dataset.src = src;
       lightboxEl.classList.add("show");
+    }
+
+    // Iterate from a previously generated image — adds it as a pending
+    // attachment so the next /send goes to /image2 with that image as the
+    // reference. Remote URLs are fetched into a data: URL first (the n8n
+    // parsers expect data: prefixes, and blob URLs wouldn't survive the
+    // hop). User just types the refinement text and hits send.
+    async function iterateFromImage(src, modelHint) {
+      if (!src) return;
+      try {
+        let dataUrl = src;
+        let mime = "image/png";
+        if (!src.startsWith("data:")) {
+          const res = await fetch(src, { mode: "cors" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const blob = await res.blob();
+          mime = blob.type || "image/png";
+          dataUrl = await new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = reject;
+            r.readAsDataURL(blob);
+          });
+        } else {
+          const md = src.match(/^data:([^;]+);/);
+          if (md) mime = md[1];
+        }
+        const slug = String(modelHint || "previous").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 30) || "previous";
+        const ext = mime.includes("jpeg") ? "jpg" : mime.includes("png") ? "png" : "img";
+        // Replace any existing pending image with this one — iteration is a
+        // single-source operation, queueing more would just confuse intent.
+        pendingAttachments = [{ name: "iterate-from-" + slug + "." + ext, type: mime, dataUrl }];
+        renderAttachmentsPreview();
+        if (inputEl) {
+          inputEl.focus();
+          autosize();
+        }
+        showToast("Iteriere von " + (modelHint || "letztem Bild") + " — Refinement-Prompt eingeben + Send", "ok");
+      } catch (e) {
+        console.warn("iterate fetch failed:", e);
+        showToast("Konnte Bild nicht zum Iterieren laden (CORS?)", "err");
+      }
     }
 
     // Save an image (data: or http://...) to the user's device.
