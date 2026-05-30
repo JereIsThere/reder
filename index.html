@@ -893,6 +893,149 @@
     error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="17" r=".8" fill="currentColor"/></svg>'
   };
 
+  // ── Media storage (IndexedDB) ────────────────────────
+  // Blobs (generated images, attachments) blow past the ~5–10 MB
+  // localStorage quota after a handful of /image calls. We store them
+  // in IndexedDB keyed by an opaque id and put "idb:<id>" references
+  // into the message tree. Render code resolves refs to blob: URLs
+  // lazily and caches them per page load.
+  // Block must sit ABOVE the Boot section so the const+var initializers
+  // run before runApp() is called synchronously from boot — otherwise the
+  // migration IIFE's first call into openIdb hits TDZ.
+  const IDB_DB = "sprecher-media";
+  const IDB_STORE = "blobs";
+  const IDB_VERSION = 1;
+  let _idbPromise = null;
+  function openIdb() {
+    if (_idbPromise) return _idbPromise;
+    if (!("indexedDB" in window)) {
+      _idbPromise = Promise.reject(new Error("IndexedDB unavailable"));
+      return _idbPromise;
+    }
+    _idbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_DB, IDB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => reject(new Error("IndexedDB blocked"));
+    });
+    _idbPromise.catch(() => { _idbPromise = null; });
+    return _idbPromise;
+  }
+  function idbTx(mode) {
+    return openIdb().then(db => db.transaction(IDB_STORE, mode).objectStore(IDB_STORE));
+  }
+  async function idbPut(key, value) {
+    const store = await idbTx("readwrite");
+    return new Promise((resolve, reject) => {
+      const r = store.put(value, key);
+      r.onsuccess = () => resolve();
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function idbGet(key) {
+    const store = await idbTx("readonly");
+    return new Promise((resolve, reject) => {
+      const r = store.get(key);
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function idbDelete(key) {
+    const store = await idbTx("readwrite");
+    return new Promise((resolve, reject) => {
+      const r = store.delete(key);
+      r.onsuccess = () => resolve();
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async function idbAllKeys() {
+    const store = await idbTx("readonly");
+    return new Promise((resolve, reject) => {
+      const r = store.getAllKeys();
+      r.onsuccess = () => resolve(r.result || []);
+      r.onerror = () => reject(r.error);
+    });
+  }
+
+  const mediaObjectUrls = new Map(); // idbKey -> blob: URL (cached for this page load)
+  function isIdbRef(s) { return typeof s === "string" && s.startsWith("idb:"); }
+  function isStrippedRef(s) { return typeof s === "string" && s.startsWith("[") && s.endsWith("]"); }
+  function newMediaKey(prefix) {
+    return (prefix || "m") + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+  }
+  async function hydrateIdbRef(ref) {
+    if (!isIdbRef(ref)) return null;
+    const key = ref.slice(4);
+    if (mediaObjectUrls.has(key)) return mediaObjectUrls.get(key);
+    try {
+      const blob = await idbGet(key);
+      if (!blob) return null;
+      const url = URL.createObjectURL(blob);
+      mediaObjectUrls.set(key, url);
+      return url;
+    } catch { return null; }
+  }
+  async function dataUrlToBlob(dataUrl) {
+    // fetch() handles the base64 decode cross-browser. Also works for
+    // huge data: URLs where atob+Uint8Array would risk a string-length cap.
+    const res = await fetch(dataUrl);
+    return res.blob();
+  }
+  async function storeDataUrlInIdb(dataUrl, prefix) {
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+    try {
+      const blob = await dataUrlToBlob(dataUrl);
+      const key = newMediaKey(prefix);
+      await idbPut(key, blob);
+      const url = URL.createObjectURL(blob);
+      mediaObjectUrls.set(key, url);
+      return { ref: "idb:" + key, objectUrl: url, blob };
+    } catch (e) {
+      console.warn("IDB store failed:", e);
+      return null;
+    }
+  }
+  async function idbRefToDataUrl(ref) {
+    if (!isIdbRef(ref)) return null;
+    const key = ref.slice(4);
+    const blob = await idbGet(key);
+    if (!blob) return null;
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+  function collectIdbRefs(state) {
+    const refs = new Set();
+    const visit = v => {
+      if (!v) return;
+      if (typeof v === "string") { if (isIdbRef(v)) refs.add(v.slice(4)); return; }
+      if (Array.isArray(v)) { v.forEach(visit); return; }
+      if (typeof v === "object") { for (const k of Object.keys(v)) visit(v[k]); }
+    };
+    visit(state);
+    return refs;
+  }
+  async function idbGarbageCollect(state) {
+    try {
+      const keep = collectIdbRefs(state);
+      const all = await idbAllKeys();
+      for (const k of all) {
+        if (!keep.has(k)) {
+          try { await idbDelete(k); } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn("IDB GC failed:", e);
+    }
+  }
+
   // ── Boot ─────────────────────────────────────────────
   const gateEl = document.getElementById("authGate");
   const appEl = document.getElementById("app");
@@ -1128,6 +1271,46 @@
 
     render();
 
+    // Migrate any legacy data: URLs still sitting in state (from before the
+    // IDB rollout) into IndexedDB, then prune unreferenced IDB blobs.
+    (async () => {
+      try {
+        let mutated = false;
+        for (const sid of Object.keys(state.sessions)) {
+          for (const m of state.sessions[sid].messages || []) {
+            if (typeof m.imageUrl === "string" && m.imageUrl.startsWith("data:")) {
+              const s = await storeDataUrlInIdb(m.imageUrl, "img");
+              if (s) { m.imageUrl = s.ref; mutated = true; }
+            }
+            if (typeof m.videoUrl === "string" && m.videoUrl.startsWith("data:")) {
+              const s = await storeDataUrlInIdb(m.videoUrl, "vid");
+              if (s) { m.videoUrl = s.ref; mutated = true; }
+            }
+            if (Array.isArray(m.images)) {
+              for (const img of m.images) {
+                if (img && typeof img.imageUrl === "string" && img.imageUrl.startsWith("data:")) {
+                  const s = await storeDataUrlInIdb(img.imageUrl, "img");
+                  if (s) { img.imageUrl = s.ref; mutated = true; }
+                }
+              }
+            }
+            if (Array.isArray(m.attachments)) {
+              for (const a of m.attachments) {
+                if (a && typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:")) {
+                  const s = await storeDataUrlInIdb(a.dataUrl, "att");
+                  if (s) { a.dataUrl = s.ref; mutated = true; }
+                }
+              }
+            }
+          }
+        }
+        if (mutated) { save(); render(); }
+        await idbGarbageCollect(state);
+      } catch (e) {
+        console.warn("IDB init/migration failed:", e);
+      }
+    })();
+
     // ── Functions ───────────────────────────────────
     function newSessionId() {
       return "s_" + Math.random().toString(36).slice(2, 8) + "_" + Date.now().toString(36).slice(-4);
@@ -1135,12 +1318,13 @@
     function blankSession(id) { return { id, createdAt: Date.now(), messages: [], title: "" }; }
     function activeSession() { return state.sessions[state.activeSessionId]; }
     function load() { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch { return null; } }
-    // Strips inline data:image/data:video URLs and large attachment dataUrls
-    // from the JSON form being saved. Base64 media easily blows past the 5-10MB
-    // localStorage quota after a few /image calls, then save() throws and
-    // (worse) the next fetch can hang or fail. Placeholders survive the round
-    // trip; on reload the images are gone but the conversation text remains.
+    // Strips transient wire-only fields and any leftover base64 media URLs
+    // (defensive — new code routes media through IDB and stores "idb:<key>"
+    // refs, but in-flight upgrades or buggy paths may still produce them).
+    // localStorage caps at ~5–10 MB; one /image response is 400 KB+ each.
     function saveReplacer(_key, value) {
+      // Drop in-memory hydration helpers — they live only for this page load.
+      if (_key === "_wireDataUrl") return undefined;
       if (typeof value !== "string") return value;
       if ((_key === "imageUrl" || _key === "videoUrl") && value.startsWith("data:")) {
         return "[media stripped on save]";
@@ -1240,7 +1424,16 @@
       for (const f of list) {
         try {
           const { dataUrl, type, name } = await fileToResizedDataUrl(f);
-          pendingAttachments.push({ name, type, dataUrl });
+          // Persist the blob in IDB so it survives reload. Keep the live
+          // data: URL in _wireDataUrl for the immediate /send (n8n expects
+          // a real data: URI, and the composite step also reads from it).
+          // _wireDataUrl is stripped by saveReplacer before persist.
+          const stored = await storeDataUrlInIdb(dataUrl, "att");
+          pendingAttachments.push({
+            name, type,
+            dataUrl: stored ? stored.ref : dataUrl,
+            _wireDataUrl: dataUrl
+          });
         } catch (e) { console.warn(e); }
       }
       fileInput.value = "";
@@ -1307,12 +1500,17 @@
       if (!attachments || attachments.length < 2) return null;
       const cap = Math.min(attachments.length, 3);
       const list = attachments.slice(0, cap);
-      const imgs = await Promise.all(list.map(a => new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = a.dataUrl;
-      })));
+      const imgs = await Promise.all(list.map(async a => {
+        let src = a._wireDataUrl;
+        if (!src && isIdbRef(a.dataUrl)) src = await idbRefToDataUrl(a.dataUrl);
+        if (!src) src = a.dataUrl;
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = src;
+        });
+      }));
       const cell = 512;       // was 768 — halved peak canvas RAM
       const labelH = 28;
       const gap = 4;
@@ -1375,10 +1573,12 @@
         const chip = document.createElement("div");
         chip.className = "attachment-chip";
         chip.innerHTML = `
-          <img class="attachment-thumb" src="${a.dataUrl}" alt="">
+          <img class="attachment-thumb" alt="">
           <span class="attachment-name">${escapeHtml(a.name)}</span>
           <button class="attachment-remove" title="Remove">×</button>
         `;
+        const thumb = chip.querySelector(".attachment-thumb");
+        setMediaSrc(thumb, a._wireDataUrl || a.dataUrl);
         chip.querySelector(".attachment-remove").addEventListener("click", () => {
           pendingAttachments.splice(idx, 1);
           renderAttachmentsPreview();
@@ -1387,12 +1587,21 @@
       });
     }
 
-    function isStripped(url) {
-      // save() replaces big data: URLs with placeholders like
-      // "[media stripped on save]" / "[attachment stripped on save]"
-      // so they don't blow the localStorage quota. On reload these come
-      // back as ordinary strings — must NOT be put into <img src="…">.
-      return typeof url === "string" && url.startsWith("[") && url.endsWith("]");
+    // Sets an <img>/<video> src from a maybe-ref string. Handles:
+    //   - "data:..." or "https://..." → set directly
+    //   - "idb:<key>" → fetch blob from IDB, set object URL when ready
+    //   - "[…stripped…]" or null/undefined → replace with stripped-fallback
+    function setMediaSrc(el, ref, fallbackLabel) {
+      if (!ref) { el.replaceWith(strippedFallback(fallbackLabel)); return; }
+      if (isStrippedRef(ref)) { el.replaceWith(strippedFallback(fallbackLabel)); return; }
+      if (isIdbRef(ref)) {
+        hydrateIdbRef(ref).then(url => {
+          if (url) el.src = url;
+          else el.replaceWith(strippedFallback(fallbackLabel));
+        });
+        return;
+      }
+      el.src = ref;
     }
 
     function strippedFallback(label) {
@@ -1676,12 +1885,12 @@
         for (const img of m.images) {
           const cell = document.createElement("div");
           cell.className = "multi-image-cell";
-          if (img.imageUrl && isStripped(img.imageUrl)) {
+          if (img.imageUrl && isStrippedRef(img.imageUrl)) {
             cell.appendChild(strippedFallback("Bild verloren beim Reload"));
           } else if (img.imageUrl) {
             const i = document.createElement("img");
-            i.src = img.imageUrl;
             i.alt = img.model || "generated image";
+            setMediaSrc(i, img.imageUrl, "Bild verloren beim Reload");
             i.addEventListener("click", () => openLightbox(img.imageUrl));
             i.addEventListener("error", () => {
               const fb = document.createElement("div");
@@ -1747,14 +1956,14 @@
           cap.textContent = m.content;
           bubble.appendChild(cap);
         }
-        if (isStripped(m.imageUrl)) {
+        if (isStrippedRef(m.imageUrl)) {
           bubble.appendChild(strippedFallback());
         } else {
           const media = document.createElement("div");
           media.className = "msg-media";
           const img = document.createElement("img");
-          img.src = m.imageUrl;
           img.alt = m.content || "generated image";
+          setMediaSrc(img, m.imageUrl);
           img.addEventListener("click", () => openLightbox(m.imageUrl));
           img.addEventListener("error", () => {
             const fallback = document.createElement("div");
@@ -1772,15 +1981,15 @@
           cap.textContent = m.content;
           bubble.appendChild(cap);
         }
-        if (isStripped(m.videoUrl)) {
+        if (isStrippedRef(m.videoUrl)) {
           bubble.appendChild(strippedFallback("Video verloren beim Reload"));
         } else {
           const media = document.createElement("div");
           media.className = "msg-media";
           const vid = document.createElement("video");
-          vid.src = m.videoUrl;
           vid.controls = true;
           vid.playsInline = true;
+          setMediaSrc(vid, m.videoUrl, "Video verloren beim Reload");
           media.appendChild(vid);
           bubble.appendChild(media);
         }
@@ -1803,12 +2012,12 @@
           const wrap = document.createElement("div");
           wrap.className = "msg-attachments";
           for (const a of m.attachments) {
-            if (a.dataUrl && isStripped(a.dataUrl)) {
+            if (a.dataUrl && isStrippedRef(a.dataUrl)) {
               wrap.appendChild(strippedFallback("Anhang verloren beim Reload"));
             } else if (a.dataUrl && a.type?.startsWith("image/")) {
               const img = document.createElement("img");
-              img.src = a.dataUrl;
               img.alt = a.name || "";
+              setMediaSrc(img, a.dataUrl, "Anhang verloren beim Reload");
               img.addEventListener("click", () => openLightbox(a.dataUrl));
               wrap.appendChild(img);
             }
@@ -1902,8 +2111,9 @@
     }
 
     function openLightbox(src) {
-      lightboxImg.src = src;
-      lightboxEl.dataset.src = src;
+      lightboxEl.dataset.src = src || "";
+      lightboxImg.removeAttribute("src");
+      setMediaSrc(lightboxImg, src);
       lightboxEl.classList.add("show");
     }
 
@@ -1915,9 +2125,18 @@
     async function iterateFromImage(src, modelHint) {
       if (!src) return;
       try {
-        let dataUrl = src;
+        let dataUrl = null;
         let mime = "image/png";
-        if (!src.startsWith("data:")) {
+        if (isIdbRef(src)) {
+          dataUrl = await idbRefToDataUrl(src);
+          if (!dataUrl) throw new Error("IDB blob missing");
+          const md = dataUrl.match(/^data:([^;]+);/);
+          if (md) mime = md[1];
+        } else if (src.startsWith("data:")) {
+          dataUrl = src;
+          const md = src.match(/^data:([^;]+);/);
+          if (md) mime = md[1];
+        } else {
           const res = await fetch(src, { mode: "cors" });
           if (!res.ok) throw new Error("HTTP " + res.status);
           const blob = await res.blob();
@@ -1928,15 +2147,18 @@
             r.onerror = reject;
             r.readAsDataURL(blob);
           });
-        } else {
-          const md = src.match(/^data:([^;]+);/);
-          if (md) mime = md[1];
         }
         const slug = String(modelHint || "previous").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 30) || "previous";
         const ext = mime.includes("jpeg") ? "jpg" : mime.includes("png") ? "png" : "img";
         // Replace any existing pending image with this one — iteration is a
         // single-source operation, queueing more would just confuse intent.
-        pendingAttachments = [{ name: "iterate-from-" + slug + "." + ext, type: mime, dataUrl }];
+        const stored = await storeDataUrlInIdb(dataUrl, "att");
+        pendingAttachments = [{
+          name: "iterate-from-" + slug + "." + ext,
+          type: mime,
+          dataUrl: stored ? stored.ref : dataUrl,
+          _wireDataUrl: dataUrl
+        }];
         renderAttachmentsPreview();
         if (inputEl) {
           inputEl.focus();
@@ -1949,10 +2171,11 @@
       }
     }
 
-    // Save an image (data: or http://...) to the user's device.
-    // For data: URLs we download directly. For remote URLs we fetch into a
-    // blob first so the download attribute actually fires (cross-origin links
-    // ignore download="" otherwise) — falls back to opening in a new tab.
+    // Save an image (data:, http://… or idb:<key>) to the user's device.
+    // ALWAYS route through a Blob + ObjectURL — assigning a multi-MB data:
+    // URI directly to <a href> has crashed Chrome tabs on big /image3
+    // composites. Blob URLs stay small and let the browser stream the file
+    // to disk instead of materialising the whole base64 string in DOM.
     async function saveImage(src, baseName) {
       if (!src) return;
       const ext = (() => {
@@ -1962,17 +2185,20 @@
         return (ud && ud[1].toLowerCase()) || "png";
       })();
       const fname = (baseName || "image").replace(/[^\w-]+/g, "-").slice(0, 60) + "." + ext;
+      let blobUrl = null;
       try {
-        let blobUrl;
-        if (src.startsWith("data:")) {
-          // Already a data URL — anchor download works directly.
-          blobUrl = src;
+        let blob;
+        if (isIdbRef(src)) {
+          blob = await idbGet(src.slice(4));
+          if (!blob) throw new Error("IDB blob missing");
+        } else if (src.startsWith("data:")) {
+          blob = await dataUrlToBlob(src);
         } else {
           const res = await fetch(src, { mode: "cors" });
           if (!res.ok) throw new Error("HTTP " + res.status);
-          const blob = await res.blob();
-          blobUrl = URL.createObjectURL(blob);
+          blob = await res.blob();
         }
+        blobUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = blobUrl;
         a.download = fname;
@@ -1980,12 +2206,18 @@
         document.body.appendChild(a);
         a.click();
         a.remove();
-        if (blobUrl !== src) setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1500);
         showToast("Gespeichert: " + fname, "ok");
       } catch (e) {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        console.warn("saveImage failed:", e);
         // CORS-blocked external URL or similar — open in new tab so user can save manually.
-        window.open(src, "_blank", "noopener");
-        showToast("In neuem Tab geöffnet (zum Speichern)", "");
+        if (typeof src === "string" && /^https?:/i.test(src)) {
+          window.open(src, "_blank", "noopener");
+          showToast("In neuem Tab geöffnet (zum Speichern)", "");
+        } else {
+          showToast("Speichern fehlgeschlagen: " + (e.message || e), "err");
+        }
       }
     }
 
@@ -2038,22 +2270,62 @@
       return out;
     }
 
-    function exportActiveSession() {
+    // Walks an assistant message and converts any inline data: URLs in
+    // imageUrl / videoUrl / images[].imageUrl into "idb:<key>" refs, with
+    // the blob stored in IndexedDB. Without this step, save()'s defensive
+    // saveReplacer would strip them to "[media stripped on save]" and the
+    // user would lose the image on reload.
+    async function internalizeMediaToIdb(msg) {
+      if (!msg) return;
+      if (typeof msg.imageUrl === "string" && msg.imageUrl.startsWith("data:")) {
+        const stored = await storeDataUrlInIdb(msg.imageUrl, "img");
+        if (stored) msg.imageUrl = stored.ref;
+      }
+      if (typeof msg.videoUrl === "string" && msg.videoUrl.startsWith("data:")) {
+        const stored = await storeDataUrlInIdb(msg.videoUrl, "vid");
+        if (stored) msg.videoUrl = stored.ref;
+      }
+      if (Array.isArray(msg.images)) {
+        for (const img of msg.images) {
+          if (img && typeof img.imageUrl === "string" && img.imageUrl.startsWith("data:")) {
+            const stored = await storeDataUrlInIdb(img.imageUrl, "img");
+            if (stored) img.imageUrl = stored.ref;
+          }
+        }
+      }
+    }
+
+    async function exportActiveSession() {
       const s = activeSession();
       if (!s.messages.length) { showToast("Nothing to export", "err"); return; }
+      // Markdown embeds need real URLs — hydrate idb:<key> refs back into
+      // data: URIs so the .md is self-contained. Stripped placeholders are
+      // skipped (image is gone, no point linking the placeholder string).
+      const refForMd = async (ref) => {
+        if (!ref) return null;
+        if (isStrippedRef(ref)) return null;
+        if (isIdbRef(ref)) return await idbRefToDataUrl(ref);
+        return ref;
+      };
       const title = s.title || autoTitle(s) || "sprecher-session";
       const lines = [`# ${title}`, "", `_Exported ${new Date().toISOString()} · model ${state.model} · @${currentUser}_`, ""];
       for (const m of s.messages) {
         const who = m.role === "user" ? `**@${currentUser}**` : (m.role === "error" ? "**Error**" : `**${authorFor(m)}** _(${m.model || state.model})_`);
         lines.push(`### ${who}`);
-        if (m.type === "image" && m.imageUrl) lines.push(`![image](${m.imageUrl})`);
-        else if (m.type === "multi-image" && Array.isArray(m.images)) {
+        if (m.type === "image" && m.imageUrl) {
+          const url = await refForMd(m.imageUrl);
+          if (url) lines.push(`![image](${url})`);
+        } else if (m.type === "multi-image" && Array.isArray(m.images)) {
           for (const img of m.images) {
-            if (img.imageUrl) lines.push(`![${img.model || "image"}${typeof img.costUsd === "number" ? " — $" + img.costUsd : ""}](${img.imageUrl})`);
+            const url = await refForMd(img.imageUrl);
+            if (url) lines.push(`![${img.model || "image"}${typeof img.costUsd === "number" ? " — $" + img.costUsd : ""}](${url})`);
           }
           if (typeof m.totalCostUsd === "number") lines.push(`_Total: $${m.totalCostUsd}_`);
         }
-        else if (m.type === "video" && m.videoUrl) lines.push(`[video](${m.videoUrl})`);
+        else if (m.type === "video" && m.videoUrl) {
+          const url = await refForMd(m.videoUrl);
+          if (url) lines.push(`[video](${url})`);
+        }
         lines.push(m.content || "");
         if (m.role === "user" && m.attachments?.length) {
           for (const a of m.attachments) lines.push(`_(attached: ${a.name})_`);
@@ -2189,11 +2461,27 @@
       }
 
       try {
+        // Resolve last-message attachments to live data: URLs. wireAttachments
+        // either carry _wireDataUrl (fresh paste/upload) or carry only idb
+        // refs (after reload). Hydrate from IDB when needed so the wire
+        // always carries real base64 for n8n's image parsers.
+        const wireDataUrls = await Promise.all((wireAttachments || []).map(async a => {
+          if (a._wireDataUrl) return a._wireDataUrl;
+          if (isIdbRef(a.dataUrl)) return await idbRefToDataUrl(a.dataUrl);
+          return a.dataUrl;
+        }));
+        const lastWireAttachments = (wireAttachments || []).map((a, i) => ({
+          name: a.name, type: a.type, dataUrl: wireDataUrls[i] || a.dataUrl
+        })).filter(a => typeof a.dataUrl === "string" && a.dataUrl.startsWith("data:"));
+
         // Build the messages array. For implicit /image2/image3 (auto-promoted
         // from attachment+text without slash keyword), inject the slash prefix
         // on the last user message ONLY in the webhook payload — local
         // s.messages keeps the user-typed text clean. The n8n parser still
         // expects the slash prefix to extract the prompt.
+        // Past-message attachments are intentionally dropped from the payload:
+        // the n8n parsers only look at the last message's attachments, and
+        // stale idb:/stripped refs would otherwise leak as garbage strings.
         const payloadMessages = s.messages.map((m, i) => {
           const isLast = i === s.messages.length - 1;
           let content = m.content;
@@ -2206,16 +2494,11 @@
               content = "/image2 " + content;
             }
           }
-          // For the last message, swap attachments to wireAttachments so the
-          // composite image goes out instead of the originals (image3 mode).
-          const attachmentsForThis = isLast && m.role === "user"
-            ? wireAttachments
-            : m.attachments;
-          return {
-            role: m.role,
-            content,
-            ...(attachmentsForThis && attachmentsForThis.length ? { attachments: attachmentsForThis } : {})
-          };
+          const out = { role: m.role, content };
+          if (isLast && m.role === "user" && lastWireAttachments.length) {
+            out.attachments = lastWireAttachments;
+          }
+          return out;
         });
         // Attachments live in messages[].attachments. We previously also sent
         // them at top level as `attachments`, which doubled the request body
@@ -2250,6 +2533,7 @@
         const aiMsg = parseWebhookResponse(data);
         aiMsg.ts = Date.now();
         if (!aiMsg.model) aiMsg.model = state.model;
+        await internalizeMediaToIdb(aiMsg);
         s.messages.push(aiMsg);
         save();
         appendMessage(aiMsg, true);
